@@ -537,8 +537,8 @@ class StreamProcessor(proc_base.BaseProcessor):
         self.fingerprint: str = ""
         self.rollout_id: str = ""
         self.think_opened: bool = False
-        self.think_closed_once: bool = False
         self.image_think_active: bool = False
+        self._content_started: bool = False
         self.role_sent: bool = False
         self.filter_tags = get_config("app.filter_tags")
         self.tool_usage_enabled = (
@@ -816,7 +816,6 @@ class StreamProcessor(proc_base.BaseProcessor):
                     if self.image_think_active and self.think_opened:
                         yield self._sse("\n</think>\n")
                         self.think_opened = False
-                        self.think_closed_once = True
                     self.image_think_active = False
                     for url in proc_base._collect_images(mr):
                         parts = url.split("/")
@@ -860,15 +859,19 @@ class StreamProcessor(proc_base.BaseProcessor):
                 if (token := resp.get("token")) is not None:
                     if not token:
                         continue
-                    if is_thinking and self.think_closed_once and not self.image_think_active:
-                        continue
                     filtered = self._filter_token(token)
                     if not filtered:
                         continue
+                    has_step_id = bool(resp.get("messageStepId"))
                     in_think = (
-                        (is_thinking and not self.think_closed_once)
+                        is_thinking
+                        or has_step_id
                         or self.image_think_active
                     )
+                    if self._content_started and in_think and not self.image_think_active:
+                        continue
+                    if not in_think and not filtered.strip():
+                        continue
                     if in_think:
                         if not self.show_think:
                             continue
@@ -879,7 +882,7 @@ class StreamProcessor(proc_base.BaseProcessor):
                         if self.think_opened:
                             yield self._sse("\n</think>\n")
                             self.think_opened = False
-                            self.think_closed_once = True
+                            self._content_started = True
 
                     if in_think:
                         self._record_content(filtered)
@@ -901,7 +904,6 @@ class StreamProcessor(proc_base.BaseProcessor):
 
             if self.think_opened:
                 yield self._sse("</think>\n")
-                self.think_closed_once = True
 
             if self._tool_stream_enabled:
                 for kind, payload in self._flush_tool_stream():
@@ -1022,6 +1024,7 @@ class CollectProcessor(proc_base.BaseProcessor):
         response_id = ""
         fingerprint = ""
         content = ""
+        fallback_tokens: list[str] = []
         idle_timeout = get_config("chat.stream_timeout")
 
         try:
@@ -1040,6 +1043,12 @@ class CollectProcessor(proc_base.BaseProcessor):
 
                 if (llm := resp.get("llmInfo")) and not fingerprint:
                     fingerprint = llm.get("modelHash", "")
+
+                is_thinking = bool(resp.get("isThinking"))
+                has_step_id = bool(resp.get("messageStepId"))
+                if not is_thinking and not has_step_id:
+                    if tok := resp.get("token"):
+                        fallback_tokens.append(tok)
 
                 if mr := resp.get("modelResponse"):
                     response_id = mr.get("responseId", "")
@@ -1139,6 +1148,9 @@ class CollectProcessor(proc_base.BaseProcessor):
             raise
         finally:
             await self.close()
+
+        if not content and fallback_tokens:
+            content = "".join(fallback_tokens)
 
         content = self._filter_content(content)
 

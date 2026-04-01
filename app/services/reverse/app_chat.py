@@ -102,6 +102,15 @@ class AppChatReverse:
             return None
         return value
 
+    _MODE_ID_MAP = {
+        "MODEL_MODE_FAST": "fast",
+        "MODEL_MODE_EXPERT": "expert",
+        "MODEL_MODE_HEAVY": "heavy",
+        "MODEL_MODE_GROK_420": "expert",
+        "MODEL_MODE_GROK_4_1_THINKING": "expert",
+        "MODEL_MODE_GROK_4_1_MINI_THINKING": "expert",
+    }
+
     @staticmethod
     def build_payload(
         message: str,
@@ -152,8 +161,11 @@ class AppChatReverse:
             "toolOverrides": tool_overrides or {},
         }
 
-        if model == "grok-420":
-            payload["enable420"] = True
+        mode_id = AppChatReverse._MODE_ID_MAP.get(mode)
+        if mode_id:
+            payload["modeId"] = mode_id
+            payload.pop("modelName", None)
+            payload.pop("modelMode", None)
 
         custom_personality = AppChatReverse._resolve_custom_personality()
         if custom_personality is not None:
